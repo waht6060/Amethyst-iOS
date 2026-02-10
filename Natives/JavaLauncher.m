@@ -1,3 +1,4 @@
+#include <mach/mach.h>
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -14,7 +15,6 @@
 #import "ios_uikit_bridge.h"
 #import "JavaLauncher.h"
 #import "LauncherPreferences.h"
-#import "PLLogOutputView.h"
 #import "PLProfiles.h"
 
 #define fm NSFileManager.defaultManager
@@ -101,26 +101,39 @@ void init_loadCustomJvmFlags(int* argc, const char** argv) {
 int launchJVM(NSString *username, id launchTarget, int width, int height, int minVersion) {
     NSLog(@"[JavaLauncher] Beginning JVM launch");
 
-    BOOL requiresTXMWorkaround = DeviceRequiresTXMWorkaround();
+    BOOL jit26UniversalScript = getPrefBool(@"debug.debug_universal_script_jit");
     BOOL jit26AlwaysAttached = getPrefBool(@"debug.debug_always_attached_jit");
-    if (requiresTXMWorkaround) {
-        void *result = JIT26CreateRegionLegacy(getpagesize());
-        if ((uint32_t)result != 0x690000E0) {
-            munmap(result, getpagesize());
-            // we can't continue since legacy script only allows calling breakpoint once
-            [NSFileManager.defaultManager copyItemAtPath:[NSBundle.mainBundle pathForResource:@"UniversalJIT26" ofType:@"js"] toPath:[NSString stringWithFormat:@"%s/UniversalJIT26.js", getenv("POJAV_HOME")] error:nil];
-            showDialog(localize(@"Error", nil), @"Support for legacy script has been removed. Please switch to Universal JIT script. To import it, long-press on Amethyst when enabling JIT in StikDebug and tap \"Assign Script\", then go to Amethyst's Documents directory and pick it.");
-            [PLLogOutputView handleExitCode:1];
-            return 1;
+    
+    if(jit26UniversalScript) {
+        // FIX: Replaced deprecated stringWithContentsOfFile
+        NSError *err = nil;
+        NSString *jitScriptPath = [[NSBundle mainBundle] pathForResource:@"JIT26Script" ofType:@"js"];
+        NSString *jitScriptContent = [NSString stringWithContentsOfFile:jitScriptPath encoding:NSUTF8StringEncoding error:&err];
+        
+        if (jitScriptContent) {
+            JIT26SendJITScript(jitScriptContent);
+        } else {
+            NSLog(@"[JavaLauncher] Failed to load JIT script: %@", err);
         }
-        JIT26SendJITScript([NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"UniversalJIT26Extension" ofType:@"js"]]);
+
         JIT26SetDetachAfterFirstBr(!jit26AlwaysAttached);
         // make sure we don't get stuck in EXC_BAD_ACCESS
         task_set_exception_ports(mach_task_self(), EXC_MASK_BAD_ACCESS, 0, EXCEPTION_DEFAULT, MACHINE_THREAD_STATE);
     }
-    if (!requiresTXMWorkaround || jit26AlwaysAttached) {
+
+    // FIX: Workaround for !@available syntax error
+    BOOL isIOS26OrLater = NO;
+    if (@available(iOS 26.0, *)) {
+        isIOS26OrLater = YES;
+    }
+
+    if ([NSFileManager.defaultManager fileExistsAtPath:[NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:@"LCAppInfo.plist"]] && !isIOS26OrLater) {
+        NSDebugLog(@"[JavaLauncher] Running in LiveContainer, skipping dyld patch");
+    } else if(!isIOS26OrLater || jit26AlwaysAttached) {
         // Activate Library Validation bypass for external runtime and dylibs (JNA, etc)
         init_bypassDyldLibValidation();
+    } else {
+        // Disable Library Validation bypass for iOS 26 TXM because of stricter JIT
     }
 
 

@@ -1,13 +1,6 @@
 name: Development build
 
 on:
-  pull_request:
-    branches-ignore:
-      - 'l10n_main'
-    types: [opened, reopened]
-  push:
-    branches-ignore:
-      - 'l10n_main'
   workflow_dispatch:
 
 jobs:
@@ -19,26 +12,24 @@ jobs:
           - platform: 2
             platform_name: ios
     
-    runs-on: J316sAP
-    steps:
-      - name: Remove work folders
-        run: |
-          echo "before"
-          ls -lah ./
-          rm -rf ./* || true
-          rm -rf ./.??* || true
-          echo "after"
-          ls -lah ./
-          
+    runs-on: macos-14
+    steps:          
       - name: Checkout repository
         uses: actions/checkout@main
 
       - name: Checkout repository submodules
         run: git submodule update --init --recursive
 
+      # Added this step because Cloud Macs don't have these installed by default
+      - name: Install dependencies
+        run: |
+          brew install gpatch make ldid
+          brew install --cask zulu@8
+          export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+
       - name: Get gl4es latest commit hash
         id: gl4es-sha
-        run: echo "::set-output name=sha::$(echo $(git ls-remote https://github.com/PojavLauncherTeam/gl4es-114-extra refs/heads/master | grep -io '^\S*'))"
+        run: echo "sha=$(echo $(git ls-remote https://github.com/PojavLauncherTeam/gl4es-114-extra refs/heads/master | grep -io '^\S*'))" >> $GITHUB_OUTPUT
         shell: bash
 
       - name: Cache gl4es
@@ -79,10 +70,22 @@ jobs:
           git commit -am "CI: Update gl4es"
           git push
 
+      - name: Patch files
+        run: |
+           # Verify if the patch is needed or simply run the build
+           # If the repo uses a patch file for download tasks, apply it here
+           if [ -f "MinecraftResourceDownloadTask.patch" ]; then
+             gpatch ./Amethyst-iOS/Natives/MinecraftResourceDownloadTask.m MinecraftResourceDownloadTask.patch
+           fi
+
       - name: Build for ${{ matrix.platform_name }}
         run: |
           export PATH=/opt/homebrew/bin:$PATH
           export SLIMMED=1
+          
+          # Set Java Home specifically for the build session
+          export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+          
           if [ "${{ matrix.platform_name }}" == "ios" ]; then
             # Build ipa and tipa for iOS
             gmake -j$(sysctl -n hw.ncpu) dsym package PLATFORM=${{ matrix.platform }}
